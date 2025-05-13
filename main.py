@@ -17,6 +17,7 @@ class Film(TypedDict):
     publish_company: str
     description: str
     registration_place: str
+    director: str
 
 
 def extract_sub_page(soup: BeautifulSoup) -> list[str]:
@@ -26,25 +27,20 @@ def extract_sub_page(soup: BeautifulSoup) -> list[str]:
     return list(map(atag_to_href, soup.select("li > a.m2r_a")))
 
 
-async def fill_description(session: ClientSession, film: Film):
-    hash_key = str(film).encode("utf-8")
-    cache = FILM_CACHE.get(hash_key)
+async def get_description(session: ClientSession, url: str) -> str:
+    cache = FILM_CACHE.get(url)
     if cache is not None:
         return cache
 
-    logger.info(f"fetching description for film {film['film_name']}")
-
-    url = film["description"]
     async with session.get(url) as resp:
         document = await resp.text()
 
     soup = BeautifulSoup(document, features="lxml")
     description: str = soup.select_one("tr:nth-child(8) > td:nth-child(2)").text
-    film["description"] = description.strip()[4:]
+    description = description.strip()[3:]
 
-    FILM_CACHE.add(hash_key, film)
-
-    return film
+    FILM_CACHE.add(url, description)
+    return description
 
 
 async def extract_page(session: ClientSession, url: str) -> list[Film]:
@@ -63,22 +59,32 @@ async def extract_page(session: ClientSession, url: str) -> list[Film]:
     for film_record in film_records:
         _detail_link = film_record.select_one("td:nth-child(2) > a")["href"]
         film_name: str = film_record.select_one("td:nth-child(3)").text
-        publish_company: str = film_record.select_one(
-            "td:nth-child(4) > script"
-        ).text.split("'")[1]
+        film_name = film_name.strip()
+        publish_company: str = film_record.select_one("td:nth-child(4) > script").text
+        publish_company = publish_company.split("'")[1]
+
+        director: str = film_record.select_one("td:nth-child(5) > script").text
+        if len(director.split("'")) > 1:
+            director = director.split("'")[1]
+        else:
+            director = ""
+
         registration_place: str = film_record.select_one("td:last-child").text
 
-        films.append(
-            Film(
-                description=_detail_link,
-                release_year=release_year,
-                film_name=film_name.strip(),
-                publish_company=publish_company.strip(),
-                registration_place=registration_place.strip(),
-            )
-        )
+        logger.info(f"fetching description for film {film_name}")
+        description = await get_description(session, _detail_link)
 
-    return [await fill_description(session, film) for film in films]
+        film = Film(
+            description=description,
+            release_year=release_year,
+            film_name=film_name,
+            publish_company=publish_company.strip(),
+            registration_place=registration_place.strip(),
+            director=director,
+        )
+        films.append(film)
+
+    return films
 
 
 async def extract_page_url(session: ClientSession, page_num: int) -> list[str]:
@@ -136,6 +142,7 @@ async def main():
             "release_year",
             "film_name",
             "publish_company",
+            "director",
             "registration_place",
             "description",
         ]
@@ -144,6 +151,7 @@ async def main():
             "release_year": "发布年份",
             "film_name": "电影名称",
             "publish_company": "发行单位",
+            "director": "编剧",
             "registration_place": "备案地",
             "description": "梗概",
         }
