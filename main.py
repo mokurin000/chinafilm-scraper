@@ -1,6 +1,6 @@
 import asyncio
 from functools import partial
-from typing import TypedDict
+from dataclasses import dataclass
 
 import polars as pl
 from diskcache import Cache
@@ -11,13 +11,14 @@ from loguru import logger
 FILM_CACHE = Cache("temp")
 
 
-class Film(TypedDict):
+@dataclass
+class Film:
     release_year: str
     film_name: str
+    director: str
     publish_company: str
     description: str
     registration_place: str
-    director: str
 
 
 def extract_sub_page(soup: BeautifulSoup) -> list[str]:
@@ -63,10 +64,12 @@ async def extract_page(session: ClientSession, url: str) -> list[Film]:
         publish_company: str = film_record.select_one("td:nth-child(4) > script").text
         publish_company = publish_company.split("'")[1]
 
-        director: str = film_record.select_one("td:nth-child(5) > script").text
-        if len(director.split("'")) > 1:
+        director_tag: Tag = film_record.select_one("td:nth-child(5) > script")
+        if director_tag is not None:
+            director: str = director_tag.text
             director = director.split("'")[1]
         else:
+            logger.warning(f"{film_name} in {url}: director not found")
             director = ""
 
         registration_place: str = film_record.select_one("td:last-child").text
@@ -134,19 +137,10 @@ async def main():
                 films.extend(await extract_page(session, page))
         except KeyboardInterrupt:
             pass
-        except:  # noqa: E722
-            pass
+        except Exception as e:  # noqa: E722
+            logger.error(e)
 
-    pl.from_dicts(films).select(
-        [
-            "release_year",
-            "film_name",
-            "publish_company",
-            "director",
-            "registration_place",
-            "description",
-        ]
-    ).rename(
+    pl.from_dicts(films).rename(
         {
             "release_year": "发布年份",
             "film_name": "电影名称",
