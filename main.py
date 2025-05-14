@@ -1,5 +1,4 @@
 import asyncio
-from functools import partial
 from dataclasses import dataclass
 
 import polars as pl
@@ -8,6 +7,7 @@ from bs4 import BeautifulSoup, Tag
 from aiohttp import ClientSession
 from loguru import logger
 
+# global cache for film description
 FILM_CACHE = Cache("temp")
 
 
@@ -30,6 +30,8 @@ def extract_sub_page(soup: BeautifulSoup) -> list[str]:
 
 async def get_description(session: ClientSession, url: str) -> str:
     cache = FILM_CACHE.get(url)
+
+    # if found cache (not empty), return from cache
     if cache is not None:
         return cache
 
@@ -49,6 +51,7 @@ async def extract_page(session: ClientSession, url: str) -> list[Film]:
 
     films: list[Film] = []
 
+    # extract release year by slicing url
     release_year = url.split("/")[1][:4]
 
     async with session.get(url) as resp:
@@ -56,9 +59,10 @@ async def extract_page(session: ClientSession, url: str) -> list[Film]:
 
     soup = BeautifulSoup(document, features="lxml")
 
+    # `:not(:first-child)` filters out header rows.
     film_records = soup.select("tr:not(:first-child)")
     for film_record in film_records:
-        _detail_link = film_record.select_one("td:nth-child(2) > a")["href"]
+        detail_link = film_record.select_one("td:nth-child(2) > a")["href"]
         film_name: str = film_record.select_one("td:nth-child(3)").text
         film_name = film_name.strip()
         publish_company: str = film_record.select_one("td:nth-child(4) > script").text
@@ -75,7 +79,7 @@ async def extract_page(session: ClientSession, url: str) -> list[Film]:
         registration_place: str = film_record.select_one("td:last-child").text
 
         logger.info(f"fetching description for film {film_name}")
-        description = await get_description(session, _detail_link)
+        description = await get_description(session, detail_link)
 
         film = Film(
             description=description,
@@ -98,6 +102,7 @@ async def extract_page_url(session: ClientSession, page_num: int) -> list[str]:
     return extract_sub_page(soup)
 
 
+# scrape initial film pages
 async def scrape(session: ClientSession) -> list[str]:
     pages = []
     async with session.get("index.html") as resp:
@@ -112,17 +117,17 @@ async def scrape(session: ClientSession) -> list[str]:
         .split()[0]
     )
 
-    extractor = partial(extract_page_url, session)
-
-    for pages_part in await asyncio.gather(
-        *(extractor(page_num) for page_num in range(1, page_count))
+    # extract announcement URLs
+    for announcements in await asyncio.gather(
+        *(extract_page_url(session, page_num) for page_num in range(1, page_count))
     ):
-        pages.extend(pages_part)
+        pages.extend(announcements)
 
     return pages
 
 
 async def main():
+    # initialize http session once, for the entire networking lifetime
     async with ClientSession(
         base_url="https://www.chinafilm.gov.cn/xxgk/gsxx/dybalx/",
         headers={
@@ -135,10 +140,10 @@ async def main():
         try:
             for page in pages:
                 films.extend(await extract_page(session, page))
-        except KeyboardInterrupt:
-            pass
-        except Exception as e:  # noqa: E722
+        except Exception as e:
             logger.error(e)
+        except:  # noqa: E722, bare `except` for Ctrl-C during asyncio waiter
+            logger.info("received Ctrl-C, exiting...")
 
     pl.from_dicts(films).rename(
         {
